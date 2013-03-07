@@ -1,0 +1,96 @@
+NCBO Annotator Performance: NCBO-hosted vs self-hosted
+========================================================
+The NCBO Bioportal (http://bioportal.bioontology.org/) provides a number of ontology-related services to the scientific community. It is used to host and define the ontology used to validate certain properties of the data stored in Synapse (http://synapse.sagebase.org). 
+One of the services provided is the NCBO Annotator: it is a web service that allows automatic tagging of data with ontology concepts. 
+One such usage in the context of Synapse would be to annotate project/folder/file descriptions or wikis using the Synapse Ontology and use the annotated results to index a 'normalized' version of the descriptions/wiki contents.
+The goal of this test is to compare the performance of the NCBO Annotator service hosted by NCBO (http://bioportal.bioontology.org/annotator?controller=redirect&url=%2Fannotator&action=index) with an instance of the Annotator service hosted on a private EC2 instance on Amazon.com.
+
+Setup
+--------------------------------------------------------
+Prior to running the test, we uploaded the latest version of the Synapse Ontology to the NCBO Bioportal site (http://bioportal.bioontology.org/ontologies/1696). We then followed the instructions at http://www.bioontology.org/wiki/index.php/Category:NCBO_Virtual_Appliance to setup a private instance of the NCBO software, and at http://www.bioontology.org/wiki/index.php/Annotator_Dataset_Workflow_Howto to upload the Synapse Ontology on that instance and setup the Annotator service.
+
+Data generation
+--------------------------------------------------------
+The performance data was generated with Jmeter (http://jmeter.apache.org/) using a Java Sampler Client (https://jmeter.apache.org/api/org/apache/jmeter/protocol/java/sampler/JavaSamplerClient.html). The client randomly picks one of twenty article abstracts, submits it to the Annotator service and measures the response time. JMeter controls the number of threads and the number of times the client is called
+(in this case, we executed a total of 1600 calls spread on 1 to 32 threads). The results are output to text (.csv format) files for later processing. The source code is available at https://github.com/Sage-Bionetworks/jmeter_ncbo.
+
+To run the test, compile the project ('mvn clean install') and copy the generated .jar file to $JMETER_HOME/lib/ext.
+
+Start JMeter, open 'src/bioportal.jmx'.
+Under 'Thread Group/Java Request', specify:
+* Service endpoint: the service endpoint ('rest.bioontology.org' for NCBO Bioportal)
+* Port: the port the service listens to ('80' for NCBO bioportal, '8080' for the AMI)
+* Ontology Id: the virtual ID of the ontology you want to restrict the results to ('1696' for the Synapse ontology on NCBO Bioportal)
+* Api Key: your API key to access REST services
+  
+Under 'Thread Group/View Results in Table', specify:
+* Filename: the path to the output file
+
+The .jmx is configured to output a .csv file with the following format:
+  Time Stamp, Elapsed Time, Thread Name, Success, Active Thread Count
+  
+Under 'Thread Group', specify the number of threads and number of loops as desired.
+
+We ran multiple sets of tests against the Annotator web service hosted by NCBO and our private AMI. For the results below,
+we consider two groups of runs totalling 1600 calls each:
+* 1 thread @ 1600 calls (ncbo_ami_1.txt / ncbo_bioportal_1.txt)
+* 2 threads @ 800 calls each (ncbo_ami_2.txt / ncbo_bioportal_2.txt)
+* 4 threads @ 400 calls each (ncbo_ami_4.txt / ncbo_bioportal_4.txt)
+* 8 threads @ 200 calls each (ncbo_ami_8.txt / ncbo_bioportal_8.txt)
+* 16 threads @ 100 calls each (ncbo_ami_16.txt / ncbo_bioportal_16.txt)
+* 32 threads @ 50 calls each (ncbo_ami_32.txt / ncbo_bioportal_32.txt)
+
+This report was generated from the results files using the R Kniter package (http://yihui.name/knitr/).
+
+Results
+--------------------------------------------------------
+The code below assumes the result files are in the current working directory and have been generated using the format described above.
+If that's not the case, use 'setwd()' to set the working directory to the one that contains the result files and/or modify the code below if the output format is different.
+
+
+```{r}
+# Set the working directory if needed
+setwd('/Users/xavier/Dropbox/ncbo_res')
+
+get_mean_sd <- function(filepath, n_at) {
+  df <- read.csv(filepath, header=FALSE, col.names=c('timestamp', 'qry_time', 'thread_name', 'success', 'active_grps', 'active_threads'))
+  m <- mean(df$qry_time[df$active_threads == n_at])
+  sd <- sd(df$qry_time[df$active_threads == n_at])
+  return(list(m, sd))
+}
+
+# Get AMI results
+ncbo_ami_mean_qry_time = vector("numeric")
+ncbo_ami_sd_qry_time = vector("numeric")
+for (nt in 2^(0:5)) {
+  l <- get_mean_sd(paste("./ncbo_ami_", toString(nt), ".txt", sep=""), nt)
+  ncbo_ami_mean_qry_time[[length(ncbo_ami_mean_qry_time)+1]] <- l[[1]]
+  ncbo_ami_sd_qry_time[[length(ncbo_ami_sd_qry_time)+1]] <- l[[2]]
+}
+
+# Get Bioportal results
+ncbo_bioportal_mean_qry_time = vector("numeric")
+ncbo_bioportal_sd_qry_time = vector("numeric")
+for (nt in 2^(0:5)) {
+  l <- get_mean_sd(paste("./ncbo_bioportal_", toString(nt), ".txt", sep=""), nt)
+  ncbo_bioportal_mean_qry_time[[length(ncbo_bioportal_mean_qry_time)+1]] <- l[[1]]
+  ncbo_bioportal_sd_qry_time[[length(ncbo_bioportal_sd_qry_time)+1]] <- l[[2]]
+}
+
+# Plot bioportal vs. AMI mean query time with correspondind sd
+plot(2^(0:5), ncbo_bioportal_mean_qry_time, pch=20, col="blue", main="", sub="", xaxt="n", xlab="", ylab="", ylim=c(-1000, max(ncbo_bioportal_mean_qry_time)*1.1))
+segments(2^(0:5), ncbo_bioportal_mean_qry_time-ncbo_bioportal_sd_qry_time, 2^(0:5), ncbo_bioportal_mean_qry_time+ncbo_bioportal_sd_qry_time, col="blue")
+points(2^(0:5), ncbo_ami_mean_qry_time, pch=20, col="red")
+segments(2^(0:5), ncbo_ami_mean_qry_time-ncbo_ami_sd_qry_time, 2^(0:5), ncbo_ami_mean_qry_time+ncbo_ami_sd_qry_time, col="red")
+axis(1, at=2^(0:5))
+title(main="Annotator: NCBO vs. AMI", sub="Average query time vs. number of clients",
+      xlab="Number of clients", ylab="Average query time (ms)")
+legend("topleft", c("NCBO-hosted", "AMI-hosted"), col=c("blue", "red"), pch=c(20,20))
+
+```
+
+Conclusion
+--------------------------------------------------------
+We have invested over the last quarter in building out integrations with a wiki framework in the Synapse web client as a vehicle for supporting scientific publications. We now have our first publication in PLOS referencing data / more detailed work found in Synapse and a couple more coming soon. Idea for future work is to index this user-generated content using Annotator service to find key scientific terms.  
+The Annotator web service performed better on the private AMI than on the NCBO host. This is expected as only one ontology is stored on the private AMI (vs. hundreds on the NCBO Bioportal site), and we are garanteed to be the only user. Note that while generating the data, we experienced some runs on NCBO with much higher response times (> 15s in some cases). However, in Synapse the tagging would likely be executed asynchronously by a worker process so the response time is not as critical as for a UI component for example. The benefits from using the NCBO-hosted service would be that (1) only one copy of the Synapse Ontoogy needs the be maintained and uploaded, (2) we have the ability to tag on more than just the Synapse ontology if we chose to do so (without having to load and sync ontologies on our private instance) and (3) we do not incur the cost of maintaining a private instance of the Annotator / Bioportal service.  
+We also investigated the possibility of using the NCBO SPAQL endpoint to provide type-ahead for ontology-backed fields in the UI. This is a case where fast, reliable access to the service is essential to the user experience. After preliminary testing, we concluded that we could not insure consistent response times compatible with a good user experience and feel that backing type-ahead with in-memory cache is preferable to accessing an external service.
